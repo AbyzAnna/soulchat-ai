@@ -1,0 +1,36 @@
+{
+  "name": "soulchat-ai",
+  "version": "1.0.0",
+  "description": "AI Voice Character Chat — Talk to anime characters with voice. PWA for iPhone.",
+  "author": "AbyzAnna",
+  "license": "MIT",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "node scripts/dev.js",
+    "start": "node scripts/dev.js",
+    "clean": "rm -rf docs/js/*.js",
+    "preview": "npx serve docs -l 3000"
+  },
+  "keywords": [
+    "ai",
+    "voice",
+    "chat",
+    "anime",
+    "characters",
+    "pwa",
+    "mental-health",
+    "elevenlabs",
+    "speech-recognition",
+    "text-to-speech"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AbyzAnna/soulchat-ai.git"
+  },
+  "homepage": "https://abyzanna.github.io/soulchat-ai/",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
