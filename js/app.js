@@ -1,6 +1,6 @@
 /**
  * SoulChat — Main Application
- * Handles screens, chat, voice recognition, and text-to-speech.
+ * Handles screens, chat, voice recognition, text-to-speech, and call mode.
  */
 
 (function () {
@@ -8,11 +8,19 @@
 
     // ===== STATE =====
     let currentCharacter = null;
+    let currentMode = 'chat'; // 'chat' or 'call'
     let isListening = false;
     let isSpeaking = false;
     let voiceEnabled = true;
     let recognition = null;
     let synthesis = window.speechSynthesis;
+
+    // Call state
+    let callActive = false;
+    let callTimerInterval = null;
+    let callStartTime = null;
+    let callAutoListen = true;
+    let callMuted = false;
 
     // ===== SETTINGS =====
     function loadSettings() {
@@ -31,6 +39,7 @@
     const loadingScreen = $('#loading-screen');
     const selectScreen = $('#select-screen');
     const chatScreen = $('#chat-screen');
+    const callScreen = $('#call-screen');
     const chatMessages = $('#chat-messages');
     const messageInput = $('#message-input');
     const sendBtn = $('#send-btn');
@@ -54,41 +63,54 @@
         showScreen(selectScreen);
     }, 1800);
 
+    // ===== ACCENT COLORS =====
+    function setAccentColor(charId) {
+        const accents = {
+            kuro: ['var(--accent-kuro)', 'var(--accent-kuro-dim)'],
+            yuki: ['var(--accent-yuki)', 'var(--accent-yuki-dim)'],
+            aria: ['var(--accent-aria)', 'var(--accent-aria-dim)']
+        };
+        const [accent, accentDim] = accents[charId] || accents.kuro;
+        document.documentElement.style.setProperty('--current-accent', accent);
+        document.documentElement.style.setProperty('--current-accent-dim', accentDim);
+    }
+
     // ===== CHARACTER SELECTION =====
     $$('.character-card').forEach(card => {
         card.addEventListener('click', () => {
             const charId = card.dataset.character;
-            selectCharacter(charId);
+            const char = AIEngine.getCharacter(charId);
+            if (!char) return;
+
+            currentCharacter = charId;
+            AIEngine.clearHistory();
+            setAccentColor(charId);
+
+            // Aria defaults to call mode, others to chat
+            if (char.defaultMode === 'call') {
+                startCall(charId);
+            } else {
+                startChat(charId);
+            }
         });
     });
 
-    function selectCharacter(charId) {
+    // ===== START CHAT MODE =====
+    function startChat(charId) {
         const char = AIEngine.getCharacter(charId);
-        if (!char) return;
-
-        currentCharacter = charId;
-        AIEngine.clearHistory();
-
-        // Set accent color
-        const accent = charId === 'kuro' ? 'var(--accent-kuro)' : 'var(--accent-yuki)';
-        const accentDim = charId === 'kuro' ? 'var(--accent-kuro-dim)' : 'var(--accent-yuki-dim)';
-        document.documentElement.style.setProperty('--current-accent', accent);
-        document.documentElement.style.setProperty('--current-accent-dim', accentDim);
+        currentMode = 'chat';
 
         // Update header
         $('#header-name').textContent = char.name;
-
-        // Set avatar
         const avatarEl = $('#header-avatar');
         avatarEl.innerHTML = `<img src="img/${charId}.jpg" alt="${char.name}" onerror="this.remove(); this.parentElement.textContent='${char.name[0]}'">`;
 
         // Clear chat
         chatMessages.innerHTML = '<div class="chat-start-spacer"></div>';
 
-        // Show chat screen
         showScreen(chatScreen);
 
-        // Send greeting after a short delay
+        // Greeting
         setTimeout(() => {
             const greeting = AIEngine.getGreeting(charId);
             addMessage(greeting, 'character');
@@ -104,7 +126,16 @@
         currentCharacter = null;
     });
 
-    // ===== SEND MESSAGE =====
+    // ===== SWITCH TO CALL FROM CHAT =====
+    $('#switch-to-call').addEventListener('click', () => {
+        if (currentCharacter) {
+            stopSpeaking();
+            stopListening();
+            startCall(currentCharacter);
+        }
+    });
+
+    // ===== SEND MESSAGE (CHAT MODE) =====
     sendBtn.addEventListener('click', sendMessage);
     messageInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -113,7 +144,6 @@
         }
     });
 
-    // Auto-resize textarea
     messageInput.addEventListener('input', () => {
         messageInput.style.height = 'auto';
         messageInput.style.height = Math.min(messageInput.scrollHeight, 100) + 'px';
@@ -126,37 +156,27 @@
         messageInput.value = '';
         messageInput.style.height = 'auto';
 
-        // Add user message
         addMessage(text, 'user');
-
-        // Show typing indicator
         const typingEl = showTypingIndicator();
 
-        // Get AI response
         const settings = loadSettings();
         const response = await AIEngine.getResponse(currentCharacter, text, settings);
 
-        // Remove typing, show response
         typingEl.remove();
         addMessage(response, 'character');
 
-        if (voiceEnabled) {
-            speakText(response);
-        }
+        if (voiceEnabled) speakText(response);
     }
 
     function addMessage(text, sender) {
         const msg = document.createElement('div');
         msg.className = `message ${sender}`;
-
         const now = new Date();
         const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
         msg.innerHTML = `
             <div class="message-bubble">${escapeHTML(text)}</div>
             <div class="message-time">${time}</div>
         `;
-
         chatMessages.appendChild(msg);
         scrollToBottom();
     }
@@ -192,39 +212,34 @@
         iconOff.style.display = voiceEnabled ? 'none' : '';
         if (!voiceEnabled) stopSpeaking();
     });
-    // Init state
     voiceToggle.classList.add('active');
 
     // ===== TEXT-TO-SPEECH =====
-    function speakText(text) {
-        if (!synthesis || !voiceEnabled) return;
+    function speakText(text, onEnd) {
+        if (!synthesis) { if (onEnd) onEnd(); return; }
 
         stopSpeaking();
 
-        // Clean text of action markers like *action*
         const cleanText = text.replace(/\*[^*]+\*/g, '').replace(/[♪~]/g, '').trim();
-        if (!cleanText) return;
+        if (!cleanText) { if (onEnd) onEnd(); return; }
 
         const char = AIEngine.getCharacter(currentCharacter);
         const utterance = new SpeechSynthesisUtterance(cleanText);
 
-        // Set voice parameters based on character
         const settings = loadSettings();
         utterance.rate = (settings.speechRate || 1) * (char?.voiceRate || 1);
         utterance.pitch = char?.voicePitch || 1;
         utterance.volume = 1;
 
-        // Try to find a good voice
+        // Voice selection
         const voices = synthesis.getVoices();
         if (voices.length > 0) {
             let voice = null;
             if (currentCharacter === 'kuro') {
-                // Prefer male voices
                 voice = voices.find(v => /male/i.test(v.name) && v.lang.startsWith('en')) ||
                         voices.find(v => /daniel|james|thomas|alex|fred/i.test(v.name)) ||
                         voices.find(v => v.lang.startsWith('en'));
             } else {
-                // Prefer female voices
                 voice = voices.find(v => /female/i.test(v.name) && v.lang.startsWith('en')) ||
                         voices.find(v => /samantha|karen|victoria|kate|moira|fiona/i.test(v.name)) ||
                         voices.find(v => v.lang.startsWith('en'));
@@ -234,18 +249,32 @@
 
         utterance.onstart = () => {
             isSpeaking = true;
-            speakingIndicator.classList.add('active');
-            const speakName = $('#speaking-name');
-            speakName.textContent = `${char?.name || 'Character'} is speaking...`;
+            if (currentMode === 'chat') {
+                speakingIndicator.classList.add('active');
+                $('#speaking-name').textContent = `${char?.name || 'Character'} is speaking...`;
+            } else {
+                // Call mode: show speaking state
+                const callActivity = $('#call-activity');
+                const callViz = $('#call-visualizer');
+                callActivity.textContent = `${char?.name} is speaking...`;
+                callActivity.className = 'call-activity speaking';
+                callViz.classList.add('active');
+            }
         };
-        utterance.onend = () => {
+
+        const handleEnd = () => {
             isSpeaking = false;
-            speakingIndicator.classList.remove('active');
+            if (currentMode === 'chat') {
+                speakingIndicator.classList.remove('active');
+            } else {
+                $('#call-visualizer').classList.remove('active');
+                $('#call-activity').className = 'call-activity';
+            }
+            if (onEnd) onEnd();
         };
-        utterance.onerror = () => {
-            isSpeaking = false;
-            speakingIndicator.classList.remove('active');
-        };
+
+        utterance.onend = handleEnd;
+        utterance.onerror = handleEnd;
 
         synthesis.speak(utterance);
     }
@@ -255,10 +284,11 @@
             synthesis.cancel();
             isSpeaking = false;
             speakingIndicator.classList.remove('active');
+            if ($('#call-visualizer')) $('#call-visualizer').classList.remove('active');
         }
     }
 
-    // Load voices (they load async on some browsers)
+    // Load voices
     if (synthesis) {
         synthesis.getVoices();
         synthesis.onvoiceschanged = () => synthesis.getVoices();
@@ -268,18 +298,16 @@
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     micBtn.addEventListener('click', () => {
-        if (isListening) {
-            stopListening();
-        } else {
-            startListening();
-        }
+        if (isListening) stopListening();
+        else startListening();
     });
 
     voiceCancel.addEventListener('click', stopListening);
 
-    function startListening() {
+    function startListening(onResult, onCancel) {
         if (!SpeechRecognition) {
             alert('Speech recognition is not supported in this browser. Please use Chrome or Safari.');
+            if (onCancel) onCancel();
             return;
         }
 
@@ -293,9 +321,18 @@
 
         recognition.onstart = () => {
             isListening = true;
-            micBtn.classList.add('listening');
-            voiceOverlay.classList.add('active');
-            voiceStatus.textContent = 'Listening...';
+            if (currentMode === 'chat') {
+                micBtn.classList.add('listening');
+                voiceOverlay.classList.add('active');
+                voiceStatus.textContent = 'Listening...';
+            } else {
+                // Call mode
+                const callActivity = $('#call-activity');
+                const callViz = $('#call-visualizer');
+                callActivity.textContent = 'Listening...';
+                callActivity.className = 'call-activity listening';
+                callViz.classList.add('active');
+            }
         };
 
         recognition.onresult = (event) => {
@@ -303,14 +340,24 @@
             for (let i = 0; i < event.results.length; i++) {
                 transcript += event.results[i][0].transcript;
             }
-            voiceStatus.textContent = transcript || 'Listening...';
 
-            // If final result, send it
+            if (currentMode === 'chat') {
+                voiceStatus.textContent = transcript || 'Listening...';
+            } else {
+                $('#call-transcript').textContent = transcript || '';
+            }
+
             if (event.results[event.results.length - 1].isFinal) {
                 stopListening();
                 if (transcript.trim()) {
-                    messageInput.value = transcript.trim();
-                    sendMessage();
+                    if (onResult) {
+                        onResult(transcript.trim());
+                    } else {
+                        messageInput.value = transcript.trim();
+                        sendMessage();
+                    }
+                } else {
+                    if (onCancel) onCancel();
                 }
             }
         };
@@ -318,16 +365,23 @@
         recognition.onerror = (event) => {
             console.warn('Speech recognition error:', event.error);
             if (event.error === 'not-allowed') {
-                voiceStatus.textContent = 'Microphone access denied';
-                setTimeout(stopListening, 1500);
+                if (currentMode === 'chat') {
+                    voiceStatus.textContent = 'Microphone access denied';
+                } else {
+                    $('#call-activity').textContent = 'Mic access denied';
+                }
+                setTimeout(() => { stopListening(); if (onCancel) onCancel(); }, 1500);
             } else {
                 stopListening();
+                if (onCancel) onCancel();
             }
         };
 
         recognition.onend = () => {
             if (isListening) {
                 stopListening();
+                // If no result came through, treat as cancel
+                if (onCancel) onCancel();
             }
         };
 
@@ -335,6 +389,7 @@
             recognition.start();
         } catch (e) {
             console.warn('Could not start recognition:', e);
+            if (onCancel) onCancel();
         }
     }
 
@@ -342,11 +397,178 @@
         isListening = false;
         micBtn.classList.remove('listening');
         voiceOverlay.classList.remove('active');
+        if (currentMode === 'call') {
+            $('#call-visualizer').classList.remove('active');
+        }
         if (recognition) {
             try { recognition.stop(); } catch {}
             recognition = null;
         }
     }
+
+    // ==========================================================
+    //  CALL MODE
+    // ==========================================================
+
+    function startCall(charId) {
+        const char = AIEngine.getCharacter(charId);
+        if (!char) return;
+
+        currentMode = 'call';
+        callActive = true;
+        callMuted = false;
+
+        // Set avatars
+        const avatarHTML = `<img src="img/${charId}.jpg" alt="${char.name}" onerror="this.remove(); this.parentElement.textContent='${char.name[0]}'">`;
+        $('#call-avatar-inner').innerHTML = avatarHTML;
+        $('#call-avatar-small').innerHTML = avatarHTML;
+        $('#call-name').textContent = char.name;
+        $('#call-active-name').textContent = char.name;
+        $('#call-timer').textContent = '00:00';
+        $('#call-transcript').textContent = '';
+        $('#call-activity').textContent = 'Connected';
+        $('#call-activity').className = 'call-activity';
+
+        // Show connecting state
+        $('#call-connecting').style.display = '';
+        $('#call-active').style.display = 'none';
+        $('#call-status-text').textContent = 'Calling...';
+
+        // Reset mute/speaker buttons
+        $('#call-mute').classList.remove('active');
+        $('#call-speaker').classList.add('active');
+
+        showScreen(callScreen);
+
+        // Simulate connection delay
+        setTimeout(() => {
+            if (!callActive) return;
+            $('#call-status-text').textContent = 'Connected';
+
+            setTimeout(() => {
+                if (!callActive) return;
+                // Switch to active state
+                $('#call-connecting').style.display = 'none';
+                $('#call-active').style.display = '';
+
+                // Start timer
+                callStartTime = Date.now();
+                callTimerInterval = setInterval(updateCallTimer, 1000);
+
+                // Character greets
+                const greeting = AIEngine.getGreeting(charId);
+                speakText(greeting, () => {
+                    // After greeting ends, auto-listen
+                    if (callActive && callAutoListen && !callMuted) {
+                        callListenCycle();
+                    }
+                });
+            }, 500);
+        }, 2000);
+    }
+
+    function updateCallTimer() {
+        if (!callStartTime) return;
+        const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+        const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const secs = String(elapsed % 60).padStart(2, '0');
+        const timerEl = $('#call-timer');
+        if (timerEl) timerEl.textContent = `${mins}:${secs}`;
+    }
+
+    function endCall() {
+        callActive = false;
+        callAutoListen = true;
+        stopSpeaking();
+        stopListening();
+
+        if (callTimerInterval) {
+            clearInterval(callTimerInterval);
+            callTimerInterval = null;
+        }
+        callStartTime = null;
+
+        showScreen(selectScreen);
+        currentCharacter = null;
+        currentMode = 'chat';
+    }
+
+    // Auto-listen cycle: listen → send to AI → speak response → listen again
+    function callListenCycle() {
+        if (!callActive || callMuted) {
+            // If muted, show waiting state
+            if (callActive) {
+                $('#call-activity').textContent = 'Muted — tap mic to unmute';
+                $('#call-activity').className = 'call-activity';
+            }
+            return;
+        }
+
+        // Small pause before listening (feels natural)
+        setTimeout(() => {
+            if (!callActive || callMuted) return;
+
+            startListening(
+                // onResult
+                async (transcript) => {
+                    if (!callActive) return;
+
+                    $('#call-transcript').textContent = `"${transcript}"`;
+                    $('#call-activity').textContent = 'Thinking...';
+                    $('#call-activity').className = 'call-activity';
+                    $('#call-visualizer').classList.remove('active');
+
+                    // Get AI response
+                    const settings = loadSettings();
+                    const response = await AIEngine.getResponse(currentCharacter, transcript, settings);
+
+                    if (!callActive) return;
+
+                    // Speak response, then listen again
+                    speakText(response, () => {
+                        if (callActive && callAutoListen && !callMuted) {
+                            callListenCycle();
+                        }
+                    });
+                },
+                // onCancel — no speech detected, try again
+                () => {
+                    if (callActive && callAutoListen && !callMuted) {
+                        $('#call-activity').textContent = 'Connected';
+                        $('#call-activity').className = 'call-activity';
+                        callListenCycle();
+                    }
+                }
+            );
+        }, 800);
+    }
+
+    // Call controls
+    $('#call-end').addEventListener('click', endCall);
+
+    $('#call-mute').addEventListener('click', () => {
+        callMuted = !callMuted;
+        $('#call-mute').classList.toggle('active', !callMuted);
+
+        if (callMuted) {
+            stopListening();
+            $('#call-activity').textContent = 'Muted — tap mic to unmute';
+            $('#call-activity').className = 'call-activity';
+            $('#call-mute span').textContent = 'Unmute';
+        } else {
+            $('#call-mute span').textContent = 'Mic';
+            if (callActive && !isSpeaking) {
+                callListenCycle();
+            }
+        }
+    });
+
+    $('#call-speaker').addEventListener('click', () => {
+        const btn = $('#call-speaker');
+        btn.classList.toggle('active');
+        // Toggle voice output
+        voiceEnabled = btn.classList.contains('active');
+    });
 
     // ===== SETTINGS =====
     $('#open-settings').addEventListener('click', () => {
