@@ -1,9 +1,10 @@
-const CACHE_NAME = 'soulchat-v1';
+const CACHE_NAME = 'soulchat-v2';
 const ASSETS = [
     '/',
     '/index.html',
     '/css/style.css',
     '/js/ai-engine.js',
+    '/js/voice-engine.js',
     '/js/app.js',
     '/manifest.json'
 ];

@@ -697,6 +697,11 @@ input[type="range"]::-webkit-slider-thumb {
     transform: translateX(20px);
 }
 
+.setting-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+}
 .save-settings-btn {
     width: 100%;
     padding: 14px;
